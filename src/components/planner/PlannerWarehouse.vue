@@ -6,6 +6,7 @@ import { setupWarehouse } from '../../composables/warehouse';
 import { useGlobalStore } from '../../stores/global';
 import WarehouseItem from './warehouse/WarehouseItem.vue';
 import EventShopButton from './warehouse/EventShopButton.vue';
+import WarehouseScanner from './warehouse/WarehouseScanner.vue';
 
 const emit = defineEmits<{ (e: 'closeOverlay'): void }>();
 
@@ -122,7 +123,9 @@ onMounted(() => {
                     </template>
                 </Popper>
             </div>
-
+            <div class="mb-4 w-full">
+                <WarehouseScanner />
+            </div>
             <div class="custom-item-list mb-5">
                 <WarehouseItem
                     v-for="material in filteredWarehouse"
