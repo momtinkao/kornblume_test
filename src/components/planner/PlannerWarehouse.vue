@@ -85,7 +85,9 @@ onMounted(() => {
                 <i class="fas fa-times"></i>
             </button>
             <p class="text-white text-center font-bold text-lg">{{ $t('warehouse-auto-save') }}</p>
-
+            <div class="mb-4 w-full">
+                <WarehouseScanner />
+            </div>
             <div class="flex gap-y-2 items-center">
                 <Popper arrow placement="bottom" offsetDistance="2">
                     <div class="tooltip" :data-tip="$t('filter')">
@@ -123,9 +125,7 @@ onMounted(() => {
                     </template>
                 </Popper>
             </div>
-            <div class="mb-4 w-full">
-                <WarehouseScanner />
-            </div>
+            
             <div class="custom-item-list mb-5">
                 <WarehouseItem
                     v-for="material in filteredWarehouse"
@@ -134,6 +134,7 @@ onMounted(() => {
                     @update:quantity="updateMaterialQuantity(material.Material, $event)"
                     class="" />
             </div>
+            
 
             <div class="flex space-x-10">
                 <!-- shops -->
