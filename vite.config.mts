@@ -7,7 +7,7 @@ import eslintPlugin from 'vite-plugin-eslint';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-    base: '/kornblume/',
+    base: '/kornblume_test/',
     plugins: [
         vue(),
         VueI18nPlugin({
