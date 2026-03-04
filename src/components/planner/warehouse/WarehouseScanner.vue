@@ -1,14 +1,6 @@
 <script setup lang="ts">
-import { ref, shallowRef } from 'vue';
+import { ref } from 'vue';
 import { useWarehouseStore } from '@/stores/warehouseStore';
-
-// 核心組件載入
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let ort: any = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let initOcr: any = null; 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let loadImg: any = null;
 
 const fileInput = ref<HTMLInputElement | null>(null);
 
@@ -17,9 +9,7 @@ const loadingText = ref('');
 const currentImageIndex = ref(0);
 const totalImages = ref(0);
 
-// 辨識模式切換：true 使用本地 GPU 伺服器, false 使用網頁內 WebGL/WASM 運算
-const useLocalServer = ref(false); 
-
+// 辨識結果清單
 const detectedItems = ref<{ name: string; quantity: number | string; conf: number; ocrImage: string }[]>([]);
 
 // CV2 輪廓篩選參數
@@ -27,90 +17,14 @@ const MIN_SIZE = 300;
 const MAX_SIZE = 500;
 const ASPECT_RATIO = 0.25;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const matSession = shallowRef<any>(null);
-const id2label = ref<Record<string, string>>({});
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ocrEngine = shallowRef<any>(null); 
-const isModelsLoaded = ref(false);
-
 const warehouseStore = useWarehouseStore();
-
-
-/**
- * 初始化 AI 模型
- */
-const initModels = async (): Promise<boolean> => {
-  if (isModelsLoaded.value) return true;
-  loadingText.value = '正在下載 AI 核心組件 (僅首次辨識需要)...';
-  
-  try {
-    const ortModule = await import('onnxruntime-web');
-    ort = ortModule.default || ortModule;
-    if (!ort.Tensor && ortModule.Tensor) ort = ortModule;
-
-    const esearchOcr = await import('esearch-ocr');
-    initOcr = esearchOcr.init || (esearchOcr.default && esearchOcr.default.init);
-    loadImg = esearchOcr.loadImg || (esearchOcr.default && esearchOcr.default.loadImg);
-
-    const baseUrl = import.meta.env.BASE_URL;
-
-    loadingText.value = '正在載入素材分類模型...';
-    const configRes = await fetch(`${baseUrl}models/config.json`);
-    const configData = await configRes.json();
-    id2label.value = configData.id2label || {};
-
-    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
-    
-    // 開啟 WebGL 加速
-    matSession.value = await ort.InferenceSession.create(`${baseUrl}models/model.onnx`, {
-      executionProviders: ['webgl', 'wasm']
-    });
-
-    loadingText.value = '正在讀取 OCR 字典檔...';
-    const dicRes = await fetch(`${baseUrl}models/dict.txt`);
-    const recDic = await dicRes.text(); 
-
-    loadingText.value = '正在啟動 eSearch-OCR 引擎...';
-    ocrEngine.value = await initOcr({
-      ort,
-      det: { input: `${baseUrl}models/det.onnx` },
-      rec: {
-        input: `${baseUrl}models/rec.onnx`,
-        decodeDic: recDic,
-        optimize: { space: false }
-      }
-    });
-    
-    isModelsLoaded.value = true;
-    loadingText.value = '';
-    return true;
-  } catch (error) {
-    console.error('初始化失敗:', error);
-    loadingText.value = '模型載入失敗，請確認檔案完整性。';
-    return false;
-  }
-};
 
 const triggerFileInput = () => {
   if (fileInput.value) fileInput.value.click();
 };
 
-const preprocessImageToTensor = (imageData: ImageData) => {
-  const { data, width, height } = imageData;
-  const float32Data = new Float32Array(3 * width * height);
-  const mean = [0.485, 0.456, 0.406];
-  const std = [0.229, 0.224, 0.225];
-  for (let i = 0; i < width * height; i++) {
-    float32Data[i] = (data[i * 4] / 255.0 - mean[0]) / std[0]; 
-    float32Data[width * height + i] = (data[i * 4 + 1] / 255.0 - mean[1]) / std[1]; 
-    float32Data[2 * width * height + i] = (data[i * 4 + 2] / 255.0 - mean[2]) / std[2]; 
-  }
-  return new ort.Tensor('float32', float32Data, [1, 3, height, width]);
-};
-
 /**
- * 處理單張圖片
+ * 處理單張圖片 (只負責 OpenCV 找輪廓與裁切，AI 交給後端)
  */
 const processSingleImage = async (file: File) => {
     // @ts-expect-error: OpenCV 全域載入
@@ -136,7 +50,9 @@ const processSingleImage = async (file: File) => {
     const hierarchy = new cv.Mat();
     cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-    const validBoxes = [];
+    // 明確宣告 any[] 避免 TypeScript 報錯
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const validBoxes: any[] = [];
     for (let i = 0; i < contours.size(); ++i) {
         const rect = cv.boundingRect(contours.get(i));
         const ratio = rect.width / rect.height;
@@ -146,6 +62,8 @@ const processSingleImage = async (file: File) => {
             validBoxes.push(rect);
         }
     }
+    
+    // 根據 Y 座標與 X 座標進行排序 (從上到下，從左到右)
     validBoxes.sort((a, b) => (Math.abs(a.y - b.y) > a.height * 0.5 ? a.y - b.y : a.x - b.x));
     gray.delete(); blurred.delete(); edges.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
 
@@ -167,23 +85,26 @@ const processSingleImage = async (file: File) => {
         let conf = 0;
         let qty: string | number = '未偵測到';
 
-        if (useLocalServer.value) {
-            // ==========================================
-            // 方式二：本機 GPU 伺服器模式 (分類 + OCR 皆由後端處理)
-            // ==========================================
-            try {
-                const blob = await new Promise<Blob | null>(resolve => { cropCanvas.toBlob(resolve, 'image/png'); });
-                if (blob) {
-                    const formData = new FormData();
-                    formData.append('file', blob);
-                    const resp = await fetch('http://127.0.0.1:5000/ocr', { method: 'POST', body: formData });
-                    const data = await resp.json();
-                    
-                    // 解析回傳的分類資訊
-                    matName = data.name || '';
+        // ==========================================
+        // 呼叫本機 Python FastAPI 伺服器進行 AI 推論
+        // ==========================================
+        try {
+            const blob = await new Promise<Blob | null>(resolve => { cropCanvas.toBlob(resolve, 'image/png'); });
+            if (blob) {
+                const formData = new FormData();
+                formData.append('file', blob);
+                
+                // 呼叫本機端 Python 伺服器 API
+                const resp = await fetch('http://127.0.0.1:5000/ocr', { method: 'POST', body: formData });
+                const data = await resp.json();
+                
+                if (data.error) {
+                    matName = data.name || "伺服器錯誤";
+                    conf = 1; 
+                    qty = '後端錯誤';
+                } else {
+                    matName = data.name || 'Unknown';
                     conf = data.conf || 0;
-
-                    // 確保將提取出來的字串轉換為數字
                     if (data.text) {
                         const cleanStr = data.text.replace(/[^0-9]/g, '');
                         if (cleanStr) {
@@ -195,84 +116,15 @@ const processSingleImage = async (file: File) => {
                         }
                     }
                 }
-            } catch (e) {
-                console.error("Local Server API Error", e);
             }
-        } else {
-            // ==========================================
-            // 方式一：網頁模式 (WebGL/WASM 本地運算)
-            // ==========================================
-            const matCanvas = document.createElement('canvas');
-            matCanvas.width = 224; matCanvas.height = 224;
-            const matCtx = matCanvas.getContext('2d')!;
-            matCtx.drawImage(cropCanvas, 0, 0, 224, 224);
-            const matTensor = preprocessImageToTensor(matCtx.getImageData(0, 0, 224, 224));
-            const results = await matSession.value!.run({ [matSession.value!.inputNames[0]]: matTensor });
-            const logits = results[matSession.value!.outputNames[0]].data as Float32Array;
-            
-            let maxLogit = -Infinity;
-            for (const val of logits) if (val > maxLogit) maxLogit = val;
-            let sumExp = 0;
-            const probs = logits.map((v: number) => {
-                const exp = Math.exp(v - maxLogit);
-                sumExp += exp;
-                return exp;
-            }).map((v: number) => v / sumExp);
-            
-            const topClassId = probs.indexOf(Math.max(...probs));
-            conf = probs[topClassId];
-            matName = (id2label.value[topClassId.toString()] || `Unknown_${topClassId}`).trim();
-
-            if (conf >= 0.7) {
-                const ocrRoiCanvas = document.createElement('canvas');
-                const baseRoiH = Math.floor(cropCanvas.height * 0.35);
-                const baseRoiY = cropCanvas.height - baseRoiH;
-                ocrRoiCanvas.width = cropCanvas.width; ocrRoiCanvas.height = baseRoiH;
-                const ocrRoiCtx = ocrRoiCanvas.getContext('2d')!;
-                ocrRoiCtx.drawImage(cropCanvas, 0, baseRoiY, cropCanvas.width, baseRoiH, 0, 0, ocrRoiCanvas.width, ocrRoiCanvas.height);
-
-                const roiMat = cv.imread(ocrRoiCanvas);
-                const grayMat = new cv.Mat();
-                cv.cvtColor(roiMat, grayMat, cv.COLOR_RGBA2GRAY);
-                const scaledMat = new cv.Mat();
-                cv.resize(grayMat, scaledMat, new cv.Size(0, 0), 2.5, 2.5, cv.INTER_CUBIC);
-                const paddedMat = new cv.Mat();
-                cv.copyMakeBorder(scaledMat, paddedMat, 30, 30, 30, 30, cv.BORDER_REPLICATE);
-
-                const finalCanvas = document.createElement('canvas');
-                cv.imshow(finalCanvas, paddedMat);
-                
-                roiMat.delete(); grayMat.delete(); scaledMat.delete(); paddedMat.delete();
-
-                try {
-                    const rawImg = await loadImg(finalCanvas);
-                    const ocrResult = await ocrEngine.value!.ocr(rawImg);
-                    if (ocrResult && ocrResult.parragraphs) {
-                        const validNumbers: { num: number, cy: number }[] = [];
-                        ocrResult.parragraphs.forEach((item: { text?: string, box?: [number, number][] }) => {
-                            if (item && item.text) {
-                                const cleanText = item.text.replace(/[^0-9]/g, '');
-                                if (cleanText) {
-                                    const num = parseInt(cleanText, 10);
-                                    if (!isNaN(num) && num <= 1000) {
-                                        const cy = Array.isArray(item.box) ? (item.box.reduce((sum, pt) => sum + pt[1], 0) / 4) : 0;
-                                        validNumbers.push({ num, cy });
-                                    }
-                                }
-                            }
-                        });
-                        if (validNumbers.length > 0) {
-                            validNumbers.sort((a, b) => b.cy - a.cy);
-                            qty = validNumbers[0].num;
-                        }
-                    }
-                } catch (err) {
-                    console.error("Web OCR Error:", err);
-                }
-            }
+        } catch (e) {
+            console.error("Local Server API Error", e);
+            matName = "API 斷線";
+            conf = 1; 
+            qty = '連線失敗';
         }
 
-        // 共用信心度過濾器
+        // 過濾信心度過低的雜訊
         if (conf < 0.8) continue;
 
         detectedItems.value.push({
@@ -292,12 +144,6 @@ const processImage = async (event: Event) => {
   isImporting.value = true;
   detectedItems.value = [];
   totalImages.value = files.length;
-  
-  // 如果不是伺服器模式，確保模型有載入
-  if (!useLocalServer.value && !isModelsLoaded.value) {
-      const success = await initModels();
-      if (!success) { isImporting.value = false; return; }
-  }
 
   for (let i = 0; i < files.length; i++) {
       currentImageIndex.value = i + 1;
@@ -312,12 +158,19 @@ const processImage = async (event: Event) => {
 const saveToWarehouse = () => {
     let updateCount = 0;
     const aggregated: Record<string, number> = {};
+    
     detectedItems.value.forEach(item => {
         if (typeof item.quantity === 'number') {
             const storeItemId = item.name;
             aggregated[storeItemId] = (aggregated[storeItemId] || 0) + item.quantity;
         }
     });
+
+    if (Object.keys(aggregated).length === 0) {
+        alert("沒有偵測到任何有效的物品數量，無法存入倉庫！\n(請確認 OCR 預覽中的數字是否正確)");
+        return;
+    }
+
     Object.entries(aggregated).forEach(([itemId, qty]) => {
         warehouseStore.updateItem(itemId, qty);
         updateCount++;
@@ -345,10 +198,6 @@ const clearResults = () => {
       <button v-if="detectedItems.length > 0" @click="clearResults" class="bg-gradient-to-br from-red-600 to-red-800 focus:ring-2 hover:bg-gradient-to-bl text-white font-bold py-2 px-6 rounded shadow-lg transition-all duration-200 active:scale-95">
         <i class="fa-solid fa-trash mr-2"></i> 清除
       </button>
-      <div class="flex items-center text-white text-xs ml-4 opacity-50 hover:opacity-100 cursor-pointer" @click="useLocalServer = !useLocalServer">
-          <i :class="useLocalServer ? 'fa-solid fa-toggle-on text-success' : 'fa-solid fa-toggle-off'"></i>
-          <span class="ml-1 font-bold">本地 GPU 加速模式</span>
-      </div>
     </div>
     
     <div v-if="loadingText" class="text-white mt-4 font-bold flex items-center bg-black/30 px-4 py-2 rounded-full border border-white/10 transition-opacity duration-300">
@@ -368,8 +217,13 @@ const clearResults = () => {
         </thead>
         <tbody class="divide-y divide-white/10">
           <tr v-for="(item, index) in detectedItems" :key="index" class="bg-[#121b31]/50 hover:bg-white/10 transition-colors duration-150">
-            <td class="px-2 py-3 text-center font-medium font-mono text-gray-200">{{$t(item.name) }}</td>
-            <td class="px-2 py-3 text-center text-info font-bold text-lg">{{ item.quantity }}</td>
+            <td class="px-2 py-3 text-center font-medium font-mono text-gray-200" :class="{'text-red-400': item.quantity === '連線失敗' || item.quantity === '後端錯誤'}">
+              <div class="text-base leading-tight">
+                {{ $t(item.name) }} 
+              </div>
+              <div class="text-[10px] text-gray-500 mt-1 opacity-70">{{ item.name }}</div>
+            </td>
+            <td class="px-2 py-3 text-center text-info font-bold text-lg" :class="{'text-red-500 text-sm': typeof item.quantity === 'string'}">{{ item.quantity }}</td>
             <td class="px-2 py-3 flex justify-center items-center">
               <img :src="item.ocrImage" class="inline-block h-20 border border-white/30 rounded bg-white/10 object-contain shadow-sm" alt="ROI" />
             </td>
